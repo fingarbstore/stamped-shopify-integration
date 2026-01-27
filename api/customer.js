@@ -1,5 +1,7 @@
 // api/customer.js
-// Updated for Stamped Loyalty 2.0 (V3 API)
+// Correct implementation for Stamped Loyalty 2.0 V3 API
+// Based on: https://developers.stamped.io/reference/lookupcustomer
+
 const https = require('https');
 
 module.exports = async (req, res) => {
@@ -30,38 +32,41 @@ module.exports = async (req, res) => {
   }
 
   try {
-    const stampedData = await getStampedCustomer(email);
+    const stampedData = await lookupCustomer(email);
     
     // If debug mode, return raw response
     if (debug === 'true') {
       return res.status(200).json({
         debug: true,
         rawStampedResponse: stampedData,
-        apiVersion: 'V3 (Loyalty 2.0)',
+        endpoint: `/api/v3/loyalty/${process.env.STAMPED_STORE_HASH}/customers/lookup`,
         environmentVars: {
           shopId: process.env.STAMPED_STORE_HASH,
-          privateKeyExists: !!process.env.STAMPED_PRIVATE_KEY
+          apiKeyExists: !!process.env.STAMPED_PRIVATE_KEY
         }
       });
     }
     
-    // Format response - V3 API has different field names
-    const customer = stampedData.data || stampedData;
-    
+    // Format response according to V3 API structure
     const response = {
       success: true,
       data: {
-        email: email,
-        customerId: customer.id || customer.customerId,
+        email: stampedData.email || email,
+        customerId: stampedData.id,
+        externalCustomerId: stampedData.externalCustomerId,
         points: {
-          balance: customer.pointsBalance || customer.points_balance || 0,
-          lifetime: customer.pointsEarned || customer.points_earned || 0,
-          pending: customer.pointsPending || customer.points_pending || 0,
-          redeemed: customer.pointsRedeemed || customer.points_redeemed || 0
+          balance: stampedData.pointsBalance || 0,
+          earned: stampedData.pointsEarned || 0,
+          redeemed: stampedData.pointsRedeemed || 0,
+          pending: stampedData.pointsPending || 0
         },
         tier: {
-          current: customer.loyaltyTierName || customer.tier?.name || 'Member',
-          id: customer.loyaltyTierId || customer.tier?.id || null
+          id: stampedData.loyaltyTierId || null,
+          name: stampedData.loyaltyTierName || 'Member'
+        },
+        stats: {
+          totalOrders: stampedData.totalOrders || 0,
+          totalSpent: stampedData.totalSpent || 0
         }
       }
     };
@@ -75,104 +80,38 @@ module.exports = async (req, res) => {
       success: false,
       error: error.message,
       code: error.code || 'INTERNAL_ERROR',
-      apiVersion: 'V3 (Loyalty 2.0)'
+      hint: error.statusCode === 404 
+        ? 'Customer not found in Stamped. They may need to be enrolled in the loyalty program.'
+        : error.statusCode === 401
+        ? 'Authentication failed. Check your STAMPED_PRIVATE_KEY is correct.'
+        : 'Check Vercel logs for details'
     });
   }
 };
 
-async function getStampedCustomer(email) {
-  const shopId = process.env.STAMPED_STORE_HASH;
-  const privateKey = process.env.STAMPED_PRIVATE_KEY;
-
-  if (!shopId || !privateKey) {
-    throw new Error('Missing Stamped API credentials');
-  }
-
-  // Try V3 API endpoint with proper authentication
-  try {
-    console.log('Attempting V3 API call for Loyalty 2.0');
-    const result = await makeV3Request({
-      path: `/api/v3/loyalty/${shopId}/customers/search`,
-      method: 'POST',
-      body: {
-        email: email
-      },
-      apiKey: privateKey
-    });
-
-    if (result && result.data && result.data.length > 0) {
-      console.log('Customer found via V3 search endpoint');
-      return result.data[0];
-    }
-  } catch (e) {
-    console.log('V3 search failed:', e.message);
-  }
-
-  // Try alternative V3 endpoint
-  try {
-    console.log('Trying alternative V3 endpoint');
-    const result = await makeV3Request({
-      path: `/api/v3/loyalty/${shopId}/customers?email=${encodeURIComponent(email)}`,
-      method: 'GET',
-      apiKey: privateKey
-    });
-
-    if (result && result.data && result.data.length > 0) {
-      console.log('Customer found via V3 GET endpoint');
-      return result.data[0];
-    }
-  } catch (e) {
-    console.log('V3 GET failed:', e.message);
-  }
-
-  // Try getting customer by querying with filter
-  try {
-    console.log('Trying V3 with query params');
-    const result = await makeV3Request({
-      path: `/api/v3/loyalty/${shopId}/customers`,
-      method: 'GET',
-      queryParams: {
-        'filter[email]': email
-      },
-      apiKey: privateKey
-    });
-
-    if (result && result.data && result.data.length > 0) {
-      console.log('Customer found via V3 filter');
-      return result.data[0];
-    }
-  } catch (e) {
-    console.log('V3 filter failed:', e.message);
-  }
-
-  // Customer not found
-  const error = new Error('Customer not found in Stamped Loyalty 2.0');
-  error.code = 'CUSTOMER_NOT_FOUND';
-  error.statusCode = 404;
-  throw error;
-}
-
-function makeV3Request({ path, method = 'GET', body = null, queryParams = {}, apiKey }) {
+function lookupCustomer(email) {
   return new Promise((resolve, reject) => {
-    // Build query string
-    const queryString = Object.keys(queryParams).length > 0
-      ? '?' + Object.entries(queryParams).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
-      : '';
+    const shopId = process.env.STAMPED_STORE_HASH;
+    const apiKey = process.env.STAMPED_PRIVATE_KEY;
 
+    if (!shopId || !apiKey) {
+      return reject(new Error('Missing Stamped API credentials. Set STAMPED_STORE_HASH and STAMPED_PRIVATE_KEY in Vercel environment variables.'));
+    }
+
+    // Official V3 API endpoint from Stamped documentation
     const options = {
       hostname: 'stamped.io',
-      path: path + queryString,
-      method: method,
+      path: `/api/v3/loyalty/${shopId}/customers/lookup?email=${encodeURIComponent(email)}`,
+      method: 'GET',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'stamped-api-key': apiKey  // V3 uses header authentication
+        'stamped-api-key': apiKey  // V3 authentication
       }
     };
 
-    const requestBody = body ? JSON.stringify(body) : null;
-
-    console.log('V3 Request:', method, `https://stamped.io${path}${queryString}`);
+    console.log('Stamped V3 API Request:', options.method, `https://${options.hostname}${options.path}`);
+    console.log('API Key length:', apiKey?.length, 'Shop ID:', shopId);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -182,22 +121,32 @@ function makeV3Request({ path, method = 'GET', body = null, queryParams = {}, ap
       });
       
       response.on('end', () => {
-        console.log('V3 Response status:', response.statusCode);
-        console.log('V3 Response body:', data.substring(0, 200));
+        console.log('Stamped Response Status:', response.statusCode);
+        console.log('Stamped Response Headers:', JSON.stringify(response.headers));
+        console.log('Stamped Response Body:', data);
         
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
+            // V3 API returns data directly, not wrapped in {data: ...}
             resolve(parsed);
           } catch (e) {
-            reject(new Error('Invalid JSON response from Stamped V3 API'));
+            const error = new Error('Invalid JSON response from Stamped V3 API');
+            error.body = data;
+            reject(error);
           }
         } else if (response.statusCode === 404) {
-          reject(new Error('Endpoint not found'));
+          const error = new Error('Customer not found in Stamped');
+          error.statusCode = 404;
+          error.code = 'CUSTOMER_NOT_FOUND';
+          reject(error);
         } else if (response.statusCode === 401 || response.statusCode === 403) {
-          reject(new Error('Authentication failed - check API key'));
+          const error = new Error('Authentication failed. Check your STAMPED_PRIVATE_KEY.');
+          error.statusCode = response.statusCode;
+          error.code = 'AUTH_FAILED';
+          reject(error);
         } else {
-          const error = new Error(`Stamped V3 API returned ${response.statusCode}`);
+          const error = new Error(`Stamped API returned ${response.statusCode}`);
           error.statusCode = response.statusCode;
           error.body = data;
           reject(error);
@@ -206,17 +155,14 @@ function makeV3Request({ path, method = 'GET', body = null, queryParams = {}, ap
     });
 
     request.on('error', (error) => {
-      reject(error);
+      console.error('Request error:', error);
+      reject(new Error(`Network error: ${error.message}`));
     });
 
     request.setTimeout(15000, () => {
       request.destroy();
-      reject(new Error('Request timeout'));
+      reject(new Error('Request timeout after 15 seconds'));
     });
-
-    if (requestBody) {
-      request.write(requestBody);
-    }
 
     request.end();
   });
