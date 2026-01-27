@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "name": "shopify-stamped-backend",
+  "builds": [
+    {
+      "src": "api/**/*.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/$1"
+    }
+  ],
+  "env": {
+    "STAMPED_PUBLIC_KEY": "@stamped-public-key",
+    "STAMPED_PRIVATE_KEY": "@stamped-private-key",
+    "STAMPED_STORE_HASH": "@stamped-store-hash"
+  }
+}
