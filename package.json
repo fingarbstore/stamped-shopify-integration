@@ -1,0 +1,13 @@
+{
+  "name": "shopify-stamped-backend",
+  "version": "1.0.0",
+  "description": "Backend API proxy for Stamped.io loyalty data",
+  "main": "api/customer.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "keywords": ["shopify", "stamped", "loyalty", "rewards"],
+  "author": "Your Name",
+  "license": "MIT"
+}
