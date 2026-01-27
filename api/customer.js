@@ -1,6 +1,6 @@
 // api/customer.js
-// Correct implementation for Stamped Loyalty 2.0 V3 API
-// Based on: https://developers.stamped.io/reference/lookupcustomer
+// Correct implementation based on actual Stamped V3 API response
+// Endpoint: GET /api/v3/loyalty/{shopId}/customers/lookup
 
 const https = require('https');
 
@@ -22,17 +22,17 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { email, debug } = req.query;
+  const { email, shopifyId, debug } = req.query;
   
-  if (!email) {
+  if (!email && !shopifyId) {
     return res.status(400).json({ 
-      error: 'Email parameter required',
+      error: 'Email or shopifyId parameter required',
       usage: '/api/customer?email=customer@email.com'
     });
   }
 
   try {
-    const stampedData = await lookupCustomer(email);
+    const stampedData = await lookupCustomer(email, shopifyId);
     
     // If debug mode, return raw response
     if (debug === 'true') {
@@ -40,34 +40,49 @@ module.exports = async (req, res) => {
         debug: true,
         rawStampedResponse: stampedData,
         endpoint: `/api/v3/loyalty/${process.env.STAMPED_STORE_HASH}/customers/lookup`,
-        environmentVars: {
-          shopId: process.env.STAMPED_STORE_HASH,
-          apiKeyExists: !!process.env.STAMPED_PRIVATE_KEY
-        }
+        queryUsed: email ? `email=${email}` : `shopifyId=${shopifyId}`
       });
     }
     
-    // Format response according to V3 API structure
+    // Format response with correct field mapping
+    const loyalty = stampedData.loyalty || {};
+    
     const response = {
       success: true,
       data: {
-        email: stampedData.email || email,
-        customerId: stampedData.id,
-        externalCustomerId: stampedData.externalCustomerId,
+        // Customer info
+        email: stampedData.email,
+        customerId: stampedData.customerId,
+        shopifyId: stampedData.shopifyId,
+        firstName: stampedData.firstName,
+        lastName: stampedData.lastName,
+        
+        // Points info (from loyalty object)
         points: {
-          balance: stampedData.pointsBalance || 0,
-          earned: stampedData.pointsEarned || 0,
-          redeemed: stampedData.pointsRedeemed || 0,
-          pending: stampedData.pointsPending || 0
+          balance: loyalty.totalPoints || 0,
+          earned: loyalty.totalPointsCredit || 0,
+          redeemed: loyalty.totalPointsDebit || 0,
+          lifetime: loyalty.totalPointsCredit || 0
         },
+        
+        // Tier info
         tier: {
-          id: stampedData.loyaltyTierId || null,
-          name: stampedData.loyaltyTierName || 'Member'
+          name: loyalty.vipTier || 'Member',
+          lastUpdated: loyalty.dateVipTierUpdated || null
         },
+        
+        // Shopping stats
         stats: {
-          totalOrders: stampedData.totalOrders || 0,
-          totalSpent: stampedData.totalSpent || 0
-        }
+          totalOrders: loyalty.totalOrders || 0,
+          totalSpent: loyalty.totalOrderSpent || 0
+        },
+        
+        // Referral
+        referralCode: stampedData.referralCode || null,
+        
+        // Metadata
+        dateCreated: stampedData.dateStampedCreated,
+        dateUpdated: stampedData.dateStampedUpdated
       }
     };
 
@@ -89,7 +104,7 @@ module.exports = async (req, res) => {
   }
 };
 
-function lookupCustomer(email) {
+function lookupCustomer(email, shopifyId) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
     const apiKey = process.env.STAMPED_PRIVATE_KEY;
@@ -98,20 +113,27 @@ function lookupCustomer(email) {
       return reject(new Error('Missing Stamped API credentials. Set STAMPED_STORE_HASH and STAMPED_PRIVATE_KEY in Vercel environment variables.'));
     }
 
-    // Official V3 API endpoint from Stamped documentation
+    // Build query string - use email or shopifyId
+    let queryString;
+    if (email) {
+      queryString = `email=${encodeURIComponent(email)}`;
+    } else if (shopifyId) {
+      queryString = `shopifyId=${encodeURIComponent(shopifyId)}`;
+    }
+
+    // Official V3 API endpoint
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/loyalty/${shopId}/customers/lookup?email=${encodeURIComponent(email)}`,
+      path: `/api/v3/loyalty/${shopId}/customers/lookup?${queryString}`,
       method: 'GET',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'stamped-api-key': apiKey  // V3 authentication
+        'stamped-api-key': apiKey
       }
     };
 
-    console.log('Stamped V3 API Request:', options.method, `https://${options.hostname}${options.path}`);
-    console.log('API Key length:', apiKey?.length, 'Shop ID:', shopId);
+    console.log('Stamped V3 API Request:', `https://${options.hostname}${options.path}`);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -122,13 +144,11 @@ function lookupCustomer(email) {
       
       response.on('end', () => {
         console.log('Stamped Response Status:', response.statusCode);
-        console.log('Stamped Response Headers:', JSON.stringify(response.headers));
-        console.log('Stamped Response Body:', data);
+        console.log('Stamped Response Body (first 500 chars):', data.substring(0, 500));
         
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
-            // V3 API returns data directly, not wrapped in {data: ...}
             resolve(parsed);
           } catch (e) {
             const error = new Error('Invalid JSON response from Stamped V3 API');
