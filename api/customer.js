@@ -1,6 +1,6 @@
 // api/customer.js
-// CORRECT ENDPOINT from Stamped support:
-// https://stamped.io/api/v3/merchant/shops/{shopId}/customers/lookup
+// UPDATED: Better debugging and endpoint handling
+// Stamped V3 API - Customer Lookup
 
 const https = require('https');
 
@@ -8,7 +8,8 @@ module.exports = async (req, res) => {
   // CORS headers
   const allowedOrigins = [
     'https://couvertureandthegarbstore.com',
-    'https://www.couvertureandthegarbstore.com'
+    'https://www.couvertureandthegarbstore.com',
+    'http://localhost:3000' // For local testing
   ];
   
   const origin = req.headers.origin;
@@ -22,25 +23,25 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { shopifyId, debug } = req.query;
+  const { shopifyId, email, debug } = req.query;
   
-  if (!shopifyId) {
+  if (!shopifyId && !email) {
     return res.status(400).json({ 
-      error: 'shopifyId parameter required',
-      usage: '/api/customer?shopifyId=7018143973476'
+      error: 'shopifyId or email parameter required',
+      usage: '/api/customer?shopifyId=7018143973476 or /api/customer?email=test@example.com'
     });
   }
 
   try {
-    const stampedData = await lookupCustomer(shopifyId);
+    const stampedData = await lookupCustomer({ shopifyId, email, debug: debug === 'true' });
     
     // If debug mode, return raw response
     if (debug === 'true') {
       return res.status(200).json({
         debug: true,
-        rawStampedResponse: stampedData,
-        endpoint: `/api/v3/merchant/shops/${process.env.STAMPED_STORE_HASH}/customers/lookup`,
-        auth: 'HTTP Basic Auth (Public:Private)'
+        rawStampedResponse: stampedData.raw,
+        requestDetails: stampedData.requestDetails,
+        endpoint: stampedData.endpoint
       });
     }
     
@@ -51,24 +52,24 @@ module.exports = async (req, res) => {
       success: true,
       data: {
         email: stampedData.email,
-        customerId: stampedData.customerId,
+        customerId: stampedData.customerId || stampedData.id,
         shopifyId: stampedData.shopifyId,
         firstName: stampedData.firstName,
         lastName: stampedData.lastName,
         points: {
-          balance: loyalty.totalPoints || 0,
-          earned: loyalty.totalPointsCredit || 0,
-          redeemed: loyalty.totalPointsDebit || 0
+          balance: loyalty.totalPoints || loyalty.points || 0,
+          earned: loyalty.totalPointsCredit || loyalty.pointsEarned || 0,
+          redeemed: loyalty.totalPointsDebit || loyalty.pointsRedeemed || 0
         },
         tier: {
-          name: loyalty.vipTier || 'Member',
+          name: loyalty.vipTier || loyalty.tier || 'Member',
           lastUpdated: loyalty.dateVipTierUpdated || null
         },
         stats: {
           totalOrders: loyalty.totalOrders || 0,
-          totalSpent: loyalty.totalOrderSpent || 0
+          totalSpent: loyalty.totalOrderSpent || loyalty.totalSpent || 0
         },
-        referralCode: stampedData.referralCode || null
+        referralCode: stampedData.referralCode || loyalty.referralCode || null
       }
     };
 
@@ -80,27 +81,44 @@ module.exports = async (req, res) => {
     res.status(error.statusCode || 500).json({
       success: false,
       error: error.message,
-      code: error.code || 'INTERNAL_ERROR'
+      code: error.code || 'INTERNAL_ERROR',
+      details: error.details || null
     });
   }
 };
 
-function lookupCustomer(shopifyId) {
+function lookupCustomer({ shopifyId, email, debug }) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
     const publicKey = process.env.STAMPED_PUBLIC_KEY;
     const privateKey = process.env.STAMPED_PRIVATE_KEY;
 
     if (!shopId || !publicKey || !privateKey) {
-      return reject(new Error('Missing Stamped API credentials'));
+      const error = new Error('Missing Stamped API credentials');
+      error.details = {
+        hasShopId: !!shopId,
+        hasPublicKey: !!publicKey,
+        hasPrivateKey: !!privateKey
+      };
+      return reject(error);
     }
 
-    // CORRECT ENDPOINT from Stamped support
+    // Build query params - try different lookup methods
+    let queryParams = [];
+    if (shopifyId) {
+      queryParams.push(`shopifyId=${encodeURIComponent(shopifyId)}`);
+    }
+    if (email) {
+      queryParams.push(`email=${encodeURIComponent(email)}`);
+    }
+    
+    // Try the lookup endpoint first
+    const path = `/api/v3/merchant/shops/${shopId}/customers/lookup?${queryParams.join('&')}`;
+    
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/merchant/shops/${shopId}/customers/lookup?shopifyId=${encodeURIComponent(shopifyId)}&shopId=${encodeURIComponent(shopId)}`,
+      path: path,
       method: 'GET',
-      // HTTP Basic Auth as specified by Stamped support
       auth: `${publicKey}:${privateKey}`,
       headers: {
         'Accept': 'application/json',
@@ -108,8 +126,16 @@ function lookupCustomer(shopifyId) {
       }
     };
 
-    console.log('Stamped API Request:', `https://${options.hostname}${options.path}`);
-    console.log('Auth:', `${publicKey.substring(0, 10)}:${privateKey.substring(0, 10)}...`);
+    const requestDetails = {
+      url: `https://${options.hostname}${options.path}`,
+      method: options.method,
+      auth: `${publicKey.substring(0, 15)}...`,
+      shopId: shopId
+    };
+
+    console.log('=== Stamped API Request ===');
+    console.log('URL:', requestDetails.url);
+    console.log('Auth:', requestDetails.auth);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -120,33 +146,60 @@ function lookupCustomer(shopifyId) {
       
       response.on('end', () => {
         console.log('Response Status:', response.statusCode);
-        console.log('Response Body:', data.substring(0, 500));
+        console.log('Response Headers:', JSON.stringify(response.headers, null, 2));
+        console.log('Response Body (first 1000 chars):', data.substring(0, 1000));
         
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
             console.log('✅ Successfully retrieved customer data');
-            resolve(parsed);
+            
+            if (debug) {
+              resolve({
+                raw: parsed,
+                requestDetails: requestDetails,
+                endpoint: path,
+                ...parsed
+              });
+            } else {
+              resolve(parsed);
+            }
           } catch (e) {
             console.error('❌ JSON parse error:', e.message);
-            reject(new Error('Invalid JSON response'));
+            const error = new Error('Invalid JSON response from Stamped');
+            error.details = { rawResponse: data.substring(0, 500) };
+            reject(error);
           }
         } else if (response.statusCode === 404) {
           console.error('❌ Customer not found (404)');
-          const error = new Error('Customer not found in Stamped');
+          console.error('Response body:', data);
+          
+          const error = new Error('Customer not found in Stamped. Check if shopifyId is correct.');
           error.statusCode = 404;
           error.code = 'CUSTOMER_NOT_FOUND';
+          error.details = {
+            searchedWith: { shopifyId, email },
+            stampedResponse: data.substring(0, 500),
+            hint: 'Ensure the customer exists in Stamped and the ID matches'
+          };
           reject(error);
         } else if (response.statusCode === 401 || response.statusCode === 403) {
           console.error('❌ Authentication failed:', response.statusCode);
-          const error = new Error('Authentication failed. Check API keys.');
+          const error = new Error('Authentication failed. Check API keys and permissions.');
           error.statusCode = response.statusCode;
           error.code = 'AUTH_FAILED';
+          error.details = {
+            stampedResponse: data.substring(0, 500),
+            hint: 'Verify STAMPED_PUBLIC_KEY and STAMPED_PRIVATE_KEY are correct'
+          };
           reject(error);
         } else {
           console.error('❌ Unexpected status:', response.statusCode);
           const error = new Error(`Stamped API returned ${response.statusCode}`);
           error.statusCode = response.statusCode;
+          error.details = {
+            stampedResponse: data.substring(0, 500)
+          };
           reject(error);
         }
       });
@@ -160,7 +213,7 @@ function lookupCustomer(shopifyId) {
     request.setTimeout(15000, () => {
       console.error('❌ Request timeout');
       request.destroy();
-      reject(new Error('Request timeout'));
+      reject(new Error('Request timeout - Stamped API did not respond in 15 seconds'));
     });
 
     request.end();
