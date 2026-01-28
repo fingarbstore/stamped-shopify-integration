@@ -1,6 +1,6 @@
 // api/customer.js
-// Fixed to match the exact working example from Stamped docs
-// stamped.lookupCustomer({shopifyId: '7018143973476', shopId: '236485'})
+// CORRECT ENDPOINT from Stamped support:
+// https://stamped.io/api/v3/merchant/shops/{shopId}/customers/lookup
 
 const https = require('https');
 
@@ -39,20 +39,12 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         debug: true,
         rawStampedResponse: stampedData,
-        requestDetails: {
-          endpoint: `/api/v3/loyalty/${process.env.STAMPED_STORE_HASH}/customers/lookup`,
-          queryParams: {
-            shopifyId: shopifyId,
-            shopId: process.env.STAMPED_STORE_HASH
-          },
-          headers: {
-            'stamped-api-key': '***' + process.env.STAMPED_PRIVATE_KEY?.slice(-4)
-          }
-        }
+        endpoint: `/api/v3/merchant/shops/${process.env.STAMPED_STORE_HASH}/customers/lookup`,
+        auth: 'HTTP Basic Auth (Public:Private)'
       });
     }
     
-    // Format response
+    // Format response with correct field mapping
     const loyalty = stampedData.loyalty || {};
     
     const response = {
@@ -84,14 +76,11 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('Stamped V3 API Error:', error.message);
-    console.error('Error details:', error);
     
     res.status(error.statusCode || 500).json({
       success: false,
       error: error.message,
-      code: error.code || 'INTERNAL_ERROR',
-      statusCode: error.statusCode,
-      body: error.body || null
+      code: error.code || 'INTERNAL_ERROR'
     });
   }
 };
@@ -99,37 +88,28 @@ module.exports = async (req, res) => {
 function lookupCustomer(shopifyId) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
-    const apiKey = process.env.STAMPED_PRIVATE_KEY;
+    const publicKey = process.env.STAMPED_PUBLIC_KEY;
+    const privateKey = process.env.STAMPED_PRIVATE_KEY;
 
-    if (!shopId || !apiKey) {
+    if (!shopId || !publicKey || !privateKey) {
       return reject(new Error('Missing Stamped API credentials'));
     }
 
-    // IMPORTANT: Include BOTH shopifyId AND shopId in query parameters
-    // This matches the working example: lookupCustomer({shopifyId: 'X', shopId: 'Y'})
-    const queryParams = [
-      `shopifyId=${encodeURIComponent(shopifyId)}`,
-      `shopId=${encodeURIComponent(shopId)}`
-    ].join('&');
-
+    // CORRECT ENDPOINT from Stamped support
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/loyalty/${shopId}/customers/lookup?${queryParams}`,
+      path: `/api/v3/merchant/shops/${shopId}/customers/lookup?shopifyId=${encodeURIComponent(shopifyId)}&shopId=${encodeURIComponent(shopId)}`,
       method: 'GET',
+      // HTTP Basic Auth as specified by Stamped support
+      auth: `${publicKey}:${privateKey}`,
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'stamped-api-key': apiKey
+        'Content-Type': 'application/json'
       }
     };
 
-    console.log('=== STAMPED API REQUEST ===');
-    console.log('URL:', `https://${options.hostname}${options.path}`);
-    console.log('Headers:', {
-      'Accept': options.headers['Accept'],
-      'Content-Type': options.headers['Content-Type'],
-      'stamped-api-key': apiKey.substring(0, 10) + '...'
-    });
+    console.log('Stamped API Request:', `https://${options.hostname}${options.path}`);
+    console.log('Auth:', `${publicKey.substring(0, 10)}:${privateKey.substring(0, 10)}...`);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -139,41 +119,34 @@ function lookupCustomer(shopifyId) {
       });
       
       response.on('end', () => {
-        console.log('=== STAMPED API RESPONSE ===');
-        console.log('Status:', response.statusCode);
-        console.log('Headers:', JSON.stringify(response.headers, null, 2));
-        console.log('Body (first 1000 chars):', data.substring(0, 1000));
+        console.log('Response Status:', response.statusCode);
+        console.log('Response Body:', data.substring(0, 500));
         
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
-            console.log('✅ Successfully parsed JSON');
+            console.log('✅ Successfully retrieved customer data');
             resolve(parsed);
           } catch (e) {
-            console.error('❌ Failed to parse JSON:', e.message);
-            const error = new Error('Invalid JSON response from Stamped V3 API');
-            error.body = data;
-            reject(error);
+            console.error('❌ JSON parse error:', e.message);
+            reject(new Error('Invalid JSON response'));
           }
         } else if (response.statusCode === 404) {
           console.error('❌ Customer not found (404)');
           const error = new Error('Customer not found in Stamped');
           error.statusCode = 404;
           error.code = 'CUSTOMER_NOT_FOUND';
-          error.body = data;
           reject(error);
         } else if (response.statusCode === 401 || response.statusCode === 403) {
           console.error('❌ Authentication failed:', response.statusCode);
-          const error = new Error('Authentication failed. Check STAMPED_PRIVATE_KEY');
+          const error = new Error('Authentication failed. Check API keys.');
           error.statusCode = response.statusCode;
           error.code = 'AUTH_FAILED';
-          error.body = data;
           reject(error);
         } else {
           console.error('❌ Unexpected status:', response.statusCode);
           const error = new Error(`Stamped API returned ${response.statusCode}`);
           error.statusCode = response.statusCode;
-          error.body = data;
           reject(error);
         }
       });
@@ -181,13 +154,13 @@ function lookupCustomer(shopifyId) {
 
     request.on('error', (error) => {
       console.error('❌ Network error:', error);
-      reject(new Error(`Network error: ${error.message}`));
+      reject(error);
     });
 
     request.setTimeout(15000, () => {
       console.error('❌ Request timeout');
       request.destroy();
-      reject(new Error('Request timeout after 15 seconds'));
+      reject(new Error('Request timeout'));
     });
 
     request.end();
