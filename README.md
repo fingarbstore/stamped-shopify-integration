@@ -111,4 +111,4 @@ Returns available rewards to redeem.
 
 ## Support
 
-For issues, contact: your-email@example.com
+For issues, contact: finlay@garbstore.com
