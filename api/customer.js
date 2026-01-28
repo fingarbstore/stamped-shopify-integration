@@ -60,7 +60,7 @@ module.exports = async (req, res) => {
           // "spent" includes both redeemed rewards AND expired points
           // Stamped API doesn't separate these
           spent: loyalty.totalPointsCredit|| 0,
-          pointsUpdated: stampedData.datePointsUpdated|| null
+          pointsUpdated: loyalty.datePointsUpdated || null
         },
         tier: {
           name: loyalty.vipTier || 'Member',
