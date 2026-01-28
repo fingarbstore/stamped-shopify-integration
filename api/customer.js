@@ -1,6 +1,5 @@
 // api/customer.js
-// UPDATED: Provides accurate points breakdown
-// - Fetches customer data AND rewards to calculate true redeemed vs expired
+// Shows points breakdown with "spent" (which includes both redeemed AND expired)
 // Uses header authentication (stamped-api-key)
 
 const https = require('https');
@@ -34,32 +33,18 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Step 1: Lookup customer
     const stampedData = await lookupCustomer({ shopifyId, email });
-    const customerId = stampedData.customerId;
-    
-    // Step 2: Get rewards to calculate accurate redeemed vs expired
-    let rewardsBreakdown = { redeemed: 0, expired: 0, active: 0 };
-    if (customerId) {
-      rewardsBreakdown = await calculateRewardsBreakdown(customerId);
-    }
     
     // If debug mode, return raw response
     if (debug === 'true') {
       return res.status(200).json({
         debug: true,
-        rawStampedResponse: stampedData,
-        rewardsBreakdown: rewardsBreakdown
+        rawStampedResponse: stampedData
       });
     }
     
     // Format response - map Stamped fields to our format
     const loyalty = stampedData.loyalty || {};
-    
-    // Calculate accurate points
-    const totalEarned = loyalty.totalPointsCredit || 0;
-    const totalDebited = loyalty.totalPointsDebit || 0;  // This includes BOTH redeemed AND expired
-    const currentBalance = loyalty.totalPoints || 0;
     
     const response = {
       success: true,
@@ -70,13 +55,11 @@ module.exports = async (req, res) => {
         firstName: stampedData.firstName,
         lastName: stampedData.lastName,
         points: {
-          balance: currentBalance,
-          earned: totalEarned,
-          // Use rewards data for accurate breakdown
-          redeemed: rewardsBreakdown.redeemed,
-          expired: rewardsBreakdown.expired,
-          // Also provide the raw total for reference
-          totalDebited: totalDebited
+          balance: loyalty.totalPoints || 0,
+          earned: loyalty.totalPointsCredit || 0,
+          // "spent" includes both redeemed rewards AND expired points
+          // Stamped API doesn't separate these
+          spent: loyalty.totalPointsDebit || 0
         },
         tier: {
           name: loyalty.vipTier || 'Member',
@@ -174,92 +157,6 @@ function lookupCustomer({ shopifyId, email }) {
       request.destroy();
       reject(new Error('Request timeout'));
     });
-    request.end();
-  });
-}
-
-function calculateRewardsBreakdown(customerId) {
-  return new Promise((resolve) => {
-    const shopId = process.env.STAMPED_STORE_HASH;
-    const privateKey = process.env.STAMPED_PRIVATE_KEY;
-
-    if (!shopId || !privateKey) {
-      return resolve({ redeemed: 0, expired: 0, active: 0 });
-    }
-
-    const options = {
-      hostname: 'stamped.io',
-      path: `/api/v3/loyalty/shops/${shopId}/rewards?limit=100`,
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'stamped-api-key': privateKey
-      }
-    };
-
-    const request = https.request(options, (response) => {
-      let data = '';
-      
-      response.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      response.on('end', () => {
-        if (response.statusCode === 200) {
-          try {
-            const allRewards = JSON.parse(data);
-            const customerRewards = Array.isArray(allRewards) 
-              ? allRewards.filter(r => r.customerId === customerId)
-              : [];
-            
-            // Calculate points by status
-            let redeemed = 0;  // Used rewards
-            let expired = 0;   // Expired rewards
-            let active = 0;    // Valid/active rewards
-            
-            customerRewards.forEach(reward => {
-              // Get the points value - rewards typically have a "value" field
-              // The points spent is usually the reward value or we estimate from the reward
-              const pointsValue = parseInt(reward.pointsSpent) || parseInt(reward.points) || 0;
-              
-              switch (reward.status) {
-                case 'used':
-                case 'redeemed':
-                  redeemed += pointsValue;
-                  break;
-                case 'expired':
-                  expired += pointsValue;
-                  break;
-                case 'valid':
-                case 'active':
-                  active += pointsValue;
-                  break;
-              }
-            });
-            
-            console.log(`✅ Rewards breakdown - Redeemed: ${redeemed}, Expired: ${expired}, Active: ${active}`);
-            resolve({ redeemed, expired, active });
-          } catch (e) {
-            console.error('Error parsing rewards:', e.message);
-            resolve({ redeemed: 0, expired: 0, active: 0 });
-          }
-        } else {
-          console.log('Could not fetch rewards for breakdown');
-          resolve({ redeemed: 0, expired: 0, active: 0 });
-        }
-      });
-    });
-
-    request.on('error', () => {
-      resolve({ redeemed: 0, expired: 0, active: 0 });
-    });
-    
-    request.setTimeout(10000, () => {
-      request.destroy();
-      resolve({ redeemed: 0, expired: 0, active: 0 });
-    });
-    
     request.end();
   });
 }
