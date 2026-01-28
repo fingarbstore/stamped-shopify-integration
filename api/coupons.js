@@ -1,5 +1,6 @@
 // api/coupons.js
-// Updated to use Shopify Customer ID
+// Uses correct endpoint + filter rewards API from Stamped support
+// https://developers.stamped.io/reference/loyalty-reports-rewards
 
 const https = require('https');
 
@@ -25,9 +26,7 @@ module.exports = async (req, res) => {
   
   if (!shopifyId) {
     return res.status(400).json({ 
-      error: 'shopifyId parameter required',
-      usage: '/api/coupons?shopifyId=7018143973476',
-      note: 'Pass {{ customer.id }} from Shopify Liquid'
+      error: 'shopifyId parameter required'
     });
   }
 
@@ -42,8 +41,8 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Then get their redemptions using Stamped customerId
-    const redemptions = await getRedemptions(customer.customerId);
+    // Then get their rewards/coupons using filter API
+    const rewards = await getCustomerRewards(customer.customerId);
     
     if (debug === 'true') {
       return res.status(200).json({
@@ -53,27 +52,27 @@ module.exports = async (req, res) => {
           customerId: customer.customerId,
           email: customer.email
         },
-        rawRedemptions: redemptions
+        rawRewards: rewards
       });
     }
     
     // Format coupons
     const now = new Date();
-    const formatted = redemptions.map(redemption => {
-      const expiryDate = redemption.expiresAt ? new Date(redemption.expiresAt) : null;
+    const formatted = rewards.map(reward => {
+      const expiryDate = reward.expiresAt ? new Date(reward.expiresAt) : null;
       const daysUntilExpiry = expiryDate ? Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24)) : null;
       
       return {
-        id: redemption.id || redemption.redemptionId,
-        code: redemption.couponCode || redemption.code,
-        rewardName: redemption.rewardName || redemption.reward?.name,
-        discountType: redemption.discountType,
-        discountValue: redemption.discountValue,
-        discountText: redemption.discountType === 'percentage' 
-          ? `${redemption.discountValue}% off`
-          : `£${redemption.discountValue} off`,
-        pointsRedeemed: redemption.pointsRedeemed || redemption.points,
-        expiresAt: redemption.expiresAt,
+        id: reward.id,
+        code: reward.couponCode || reward.code,
+        rewardName: reward.name || reward.rewardName,
+        discountType: reward.discountType,
+        discountValue: reward.discountValue,
+        discountText: reward.discountType === 'percentage' 
+          ? `${reward.discountValue}% off`
+          : `£${reward.discountValue} off`,
+        pointsRedeemed: reward.pointsRedeemed || reward.points,
+        expiresAt: reward.expiresAt,
         expiryDate: expiryDate ? expiryDate.toISOString() : null,
         expiryDateFormatted: expiryDate ? expiryDate.toLocaleDateString('en-GB', {
           day: 'numeric',
@@ -83,9 +82,9 @@ module.exports = async (req, res) => {
         daysUntilExpiry: daysUntilExpiry,
         isExpiringSoon: daysUntilExpiry !== null && daysUntilExpiry > 0 && daysUntilExpiry <= 7,
         isExpired: daysUntilExpiry !== null && daysUntilExpiry < 0,
-        used: redemption.used || redemption.status === 'used',
-        usedAt: redemption.usedAt || null,
-        createdAt: redemption.createdAt || redemption.dateCreated
+        used: reward.used || reward.status === 'used',
+        usedAt: reward.usedAt || null,
+        createdAt: reward.createdAt || reward.dateCreated
       };
     });
 
@@ -124,24 +123,25 @@ module.exports = async (req, res) => {
 function lookupCustomer(shopifyId) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
-    const apiKey = process.env.STAMPED_PRIVATE_KEY;
+    const publicKey = process.env.STAMPED_PUBLIC_KEY;
+    const privateKey = process.env.STAMPED_PRIVATE_KEY;
 
-    if (!shopId || !apiKey) {
+    if (!shopId || !publicKey || !privateKey) {
       return reject(new Error('Missing Stamped API credentials'));
     }
 
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/loyalty/${shopId}/customers/lookup?shopifyId=${encodeURIComponent(shopifyId)}`,
+      path: `/api/v3/merchant/shops/${shopId}/customers/lookup?shopifyId=${encodeURIComponent(shopifyId)}&shopId=${encodeURIComponent(shopId)}`,
       method: 'GET',
+      auth: `${publicKey}:${privateKey}`,
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'stamped-api-key': apiKey
+        'Content-Type': 'application/json'
       }
     };
 
-    console.log('Looking up customer by Shopify ID:', shopifyId);
+    console.log('Looking up customer...');
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -155,7 +155,7 @@ function lookupCustomer(shopifyId) {
           try {
             resolve(JSON.parse(data));
           } catch (e) {
-            reject(new Error('Invalid JSON response'));
+            reject(new Error('Invalid JSON'));
           }
         } else if (response.statusCode === 404) {
           reject(new Error('Customer not found'));
@@ -174,27 +174,29 @@ function lookupCustomer(shopifyId) {
   });
 }
 
-function getRedemptions(customerId) {
+function getCustomerRewards(customerId) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
-    const apiKey = process.env.STAMPED_PRIVATE_KEY;
+    const publicKey = process.env.STAMPED_PUBLIC_KEY;
+    const privateKey = process.env.STAMPED_PRIVATE_KEY;
 
-    if (!shopId || !apiKey) {
+    if (!shopId || !publicKey || !privateKey) {
       return reject(new Error('Missing Stamped API credentials'));
     }
 
+    // Use filter rewards API endpoint
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/loyalty/${shopId}/redemptions?customerId=${encodeURIComponent(customerId)}`,
+      path: `/api/v3/merchant/shops/${shopId}/loyalty/reports/rewards?customerId=${encodeURIComponent(customerId)}`,
       method: 'GET',
+      auth: `${publicKey}:${privateKey}`,
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'stamped-api-key': apiKey
+        'Content-Type': 'application/json'
       }
     };
 
-    console.log('Fetching redemptions for customer:', customerId);
+    console.log('Fetching customer rewards:', options.path);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -204,18 +206,19 @@ function getRedemptions(customerId) {
       });
       
       response.on('end', () => {
-        console.log('Redemptions response status:', response.statusCode);
+        console.log('Rewards response status:', response.statusCode);
 
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
-            const redemptions = parsed.data || parsed;
-            resolve(Array.isArray(redemptions) ? redemptions : []);
+            // Response might be { data: [...] } or just [...]
+            const rewards = parsed.data || parsed.rewards || parsed;
+            resolve(Array.isArray(rewards) ? rewards : []);
           } catch (e) {
-            reject(new Error('Invalid JSON response'));
+            reject(new Error('Invalid JSON'));
           }
         } else if (response.statusCode === 404) {
-          resolve([]);
+          resolve([]); // No rewards found
         } else {
           reject(new Error(`API returned ${response.statusCode}`));
         }
