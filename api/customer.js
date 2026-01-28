@@ -1,11 +1,11 @@
-// api/coupons.js
-// UPDATED: Better debugging and multiple endpoint fallbacks
-// Uses loyalty reports rewards API from Stamped
+// api/customer.js
+// FIXED: Uses header authentication (stamped-api-key)
+// Stamped V3 API - Customer Lookup
 
 const https = require('https');
 
 module.exports = async (req, res) => {
-  // CORS
+  // CORS headers
   const allowedOrigins = [
     'https://couvertureandthegarbstore.com',
     'https://www.couvertureandthegarbstore.com',
@@ -23,122 +23,66 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { shopifyId, email, customerId, debug } = req.query;
+  const { shopifyId, email, debug } = req.query;
   
-  if (!shopifyId && !email && !customerId) {
+  if (!shopifyId && !email) {
     return res.status(400).json({ 
-      error: 'shopifyId, email, or customerId parameter required',
-      usage: '/api/coupons?shopifyId=7018143973476'
+      error: 'shopifyId or email parameter required',
+      usage: '/api/customer?shopifyId=7018143973476'
     });
   }
 
   try {
-    let stampedCustomerId = customerId;
-    let customerData = null;
-
-    // If we don't have customerId, look up the customer first
-    if (!stampedCustomerId) {
-      console.log('Looking up customer by shopifyId or email...');
-      customerData = await lookupCustomer({ shopifyId, email });
-      stampedCustomerId = customerData.customerId || customerData.id;
-      
-      if (!stampedCustomerId) {
-        return res.status(404).json({
-          success: false,
-          error: 'Customer found but no customerId returned',
-          customerData: debug === 'true' ? customerData : undefined
-        });
-      }
-    }
-
-    console.log('Fetching rewards for customerId:', stampedCustomerId);
-
-    // Get their rewards/coupons
-    const rewardsResponse = await getCustomerRewards(stampedCustomerId, debug === 'true');
+    const stampedData = await lookupCustomer({ shopifyId, email });
     
+    // If debug mode, return raw response
     if (debug === 'true') {
       return res.status(200).json({
         debug: true,
-        customer: customerData ? {
-          shopifyId: customerData.shopifyId,
-          customerId: stampedCustomerId,
-          email: customerData.email
-        } : { customerId: stampedCustomerId },
-        rawRewardsResponse: rewardsResponse.raw,
-        requestDetails: rewardsResponse.requestDetails,
-        parsedRewards: rewardsResponse.rewards
+        rawStampedResponse: stampedData
       });
     }
     
-    const rewards = rewardsResponse.rewards || [];
+    // Format response - map Stamped fields to our format
+    const loyalty = stampedData.loyalty || {};
     
-    // Format coupons
-    const now = new Date();
-    const formatted = rewards.map(reward => {
-      const expiryDate = reward.expiresAt || reward.expiry || reward.expiryDate;
-      const parsedExpiry = expiryDate ? new Date(expiryDate) : null;
-      const daysUntilExpiry = parsedExpiry ? Math.ceil((parsedExpiry - now) / (1000 * 60 * 60 * 24)) : null;
-      
-      // Handle different response formats from Stamped
-      const code = reward.couponCode || reward.code || reward.discountCode;
-      const discountType = reward.discountType || reward.type || 'fixed';
-      const discountValue = reward.discountValue || reward.value || reward.amount || 0;
-      
-      return {
-        id: reward.id || reward.rewardId,
-        code: code,
-        rewardName: reward.name || reward.rewardName || reward.title,
-        discountType: discountType,
-        discountValue: discountValue,
-        discountText: discountType === 'percentage' || discountType === 'percent'
-          ? `${discountValue}% off`
-          : `£${discountValue} off`,
-        pointsRedeemed: reward.pointsRedeemed || reward.points || reward.pointsCost,
-        expiresAt: expiryDate,
-        expiryDate: parsedExpiry ? parsedExpiry.toISOString() : null,
-        expiryDateFormatted: parsedExpiry ? parsedExpiry.toLocaleDateString('en-GB', {
-          day: 'numeric',
-          month: 'short',
-          year: 'numeric'
-        }) : 'No expiry',
-        daysUntilExpiry: daysUntilExpiry,
-        isExpiringSoon: daysUntilExpiry !== null && daysUntilExpiry > 0 && daysUntilExpiry <= 7,
-        isExpired: daysUntilExpiry !== null && daysUntilExpiry < 0,
-        used: reward.used || reward.status === 'used' || reward.redeemed === true,
-        usedAt: reward.usedAt || reward.redeemedAt || null,
-        createdAt: reward.createdAt || reward.dateCreated || reward.created
-      };
-    });
-
-    // Separate into categories
-    const active = formatted.filter(c => !c.used && !c.isExpired);
-    const used = formatted.filter(c => c.used);
-    const expired = formatted.filter(c => c.isExpired && !c.used);
-
-    res.status(200).json({
+    const response = {
       success: true,
       data: {
-        all: formatted,
-        active: active,
-        used: used,
-        expired: expired,
-        counts: {
-          total: formatted.length,
-          active: active.length,
-          used: used.length,
-          expired: expired.length
-        }
+        email: stampedData.email,
+        customerId: stampedData.customerId,
+        shopifyId: stampedData.shopifyId,
+        firstName: stampedData.firstName,
+        lastName: stampedData.lastName,
+        points: {
+          balance: loyalty.totalPoints || 0,
+          earned: loyalty.totalPointsCredit || 0,
+          redeemed: loyalty.totalPointsDebit || 0
+        },
+        tier: {
+          name: loyalty.vipTier || 'Member',
+          lastUpdated: loyalty.dateVipTierUpdated || null
+        },
+        stats: {
+          totalOrders: loyalty.totalOrders || 0,
+          totalSpent: loyalty.totalOrderSpent || 0
+        },
+        referralCode: stampedData.referralCode || null,
+        tags: stampedData.tags || [],
+        country: stampedData.country || null,
+        locale: stampedData.locale || null
       }
-    });
+    };
+
+    res.status(200).json(response);
 
   } catch (error) {
-    console.error('Coupons API Error:', error.message);
+    console.error('Stamped API Error:', error.message);
     
     res.status(error.statusCode || 500).json({
       success: false,
       error: error.message,
-      code: error.code || 'INTERNAL_ERROR',
-      details: error.details || null
+      code: error.code || 'INTERNAL_ERROR'
     });
   }
 };
@@ -146,14 +90,14 @@ module.exports = async (req, res) => {
 function lookupCustomer({ shopifyId, email }) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
-    const publicKey = process.env.STAMPED_PUBLIC_KEY;
     const privateKey = process.env.STAMPED_PRIVATE_KEY;
 
-    if (!shopId || !publicKey || !privateKey) {
+    if (!shopId || !privateKey) {
       return reject(new Error('Missing Stamped API credentials'));
     }
 
-    let queryParams = [];
+    // Build query params
+    let queryParams = [`shopId=${encodeURIComponent(shopId)}`];
     if (shopifyId) queryParams.push(`shopifyId=${encodeURIComponent(shopifyId)}`);
     if (email) queryParams.push(`email=${encodeURIComponent(email)}`);
 
@@ -161,14 +105,14 @@ function lookupCustomer({ shopifyId, email }) {
       hostname: 'stamped.io',
       path: `/api/v3/merchant/shops/${shopId}/customers/lookup?${queryParams.join('&')}`,
       method: 'GET',
-      auth: `${publicKey}:${privateKey}`,
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'stamped-api-key': privateKey  // CORRECT AUTH METHOD
       }
     };
 
-    console.log('Customer lookup URL:', `https://${options.hostname}${options.path}`);
+    console.log('Stamped API Request:', options.path);
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -178,24 +122,29 @@ function lookupCustomer({ shopifyId, email }) {
       });
       
       response.on('end', () => {
-        console.log('Customer lookup status:', response.statusCode);
+        console.log('Response Status:', response.statusCode);
         
         if (response.statusCode === 200) {
           try {
-            resolve(JSON.parse(data));
+            const parsed = JSON.parse(data);
+            console.log('✅ Customer found:', parsed.email);
+            resolve(parsed);
           } catch (e) {
-            reject(new Error('Invalid JSON from customer lookup'));
+            reject(new Error('Invalid JSON response'));
           }
         } else if (response.statusCode === 404) {
           const error = new Error('Customer not found in Stamped');
           error.statusCode = 404;
           error.code = 'CUSTOMER_NOT_FOUND';
-          error.details = { response: data.substring(0, 500) };
+          reject(error);
+        } else if (response.statusCode === 401) {
+          const error = new Error('Authentication failed');
+          error.statusCode = 401;
+          error.code = 'AUTH_FAILED';
           reject(error);
         } else {
-          const error = new Error(`Customer lookup failed: ${response.statusCode}`);
+          const error = new Error(`Stamped API returned ${response.statusCode}`);
           error.statusCode = response.statusCode;
-          error.details = { response: data.substring(0, 500) };
           reject(error);
         }
       });
@@ -204,112 +153,8 @@ function lookupCustomer({ shopifyId, email }) {
     request.on('error', reject);
     request.setTimeout(15000, () => {
       request.destroy();
-      reject(new Error('Customer lookup timeout'));
+      reject(new Error('Request timeout'));
     });
-    request.end();
-  });
-}
-
-function getCustomerRewards(customerId, includeDebug = false) {
-  return new Promise((resolve, reject) => {
-    const shopId = process.env.STAMPED_STORE_HASH;
-    const publicKey = process.env.STAMPED_PUBLIC_KEY;
-    const privateKey = process.env.STAMPED_PRIVATE_KEY;
-
-    if (!shopId || !publicKey || !privateKey) {
-      return reject(new Error('Missing Stamped API credentials'));
-    }
-
-    // Try the loyalty reports rewards endpoint
-    // Documentation: https://developers.stamped.io/reference/loyalty-reports-rewards
-    const path = `/api/v3/merchant/shops/${shopId}/loyalty/reports/rewards?customerId=${encodeURIComponent(customerId)}`;
-    
-    const options = {
-      hostname: 'stamped.io',
-      path: path,
-      method: 'GET',
-      auth: `${publicKey}:${privateKey}`,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      }
-    };
-
-    const requestDetails = {
-      url: `https://${options.hostname}${options.path}`,
-      method: options.method,
-      customerId: customerId
-    };
-
-    console.log('=== Rewards API Request ===');
-    console.log('URL:', requestDetails.url);
-
-    const request = https.request(options, (response) => {
-      let data = '';
-      
-      response.on('data', (chunk) => {
-        data += chunk;
-      });
-      
-      response.on('end', () => {
-        console.log('Rewards response status:', response.statusCode);
-        console.log('Rewards response body (first 500):', data.substring(0, 500));
-
-        if (response.statusCode === 200) {
-          try {
-            const parsed = JSON.parse(data);
-            
-            // Handle different response formats
-            let rewards = [];
-            if (Array.isArray(parsed)) {
-              rewards = parsed;
-            } else if (parsed.data && Array.isArray(parsed.data)) {
-              rewards = parsed.data;
-            } else if (parsed.rewards && Array.isArray(parsed.rewards)) {
-              rewards = parsed.rewards;
-            } else if (parsed.results && Array.isArray(parsed.results)) {
-              rewards = parsed.results;
-            }
-            
-            console.log(`✅ Found ${rewards.length} rewards`);
-            
-            resolve({
-              rewards: rewards,
-              raw: includeDebug ? parsed : undefined,
-              requestDetails: includeDebug ? requestDetails : undefined
-            });
-          } catch (e) {
-            console.error('❌ JSON parse error:', e.message);
-            reject(new Error('Invalid JSON from rewards API'));
-          }
-        } else if (response.statusCode === 404) {
-          // 404 might mean no rewards, not an error
-          console.log('ℹ️ No rewards found (404)');
-          resolve({
-            rewards: [],
-            raw: includeDebug ? { status: 404, body: data } : undefined,
-            requestDetails: includeDebug ? requestDetails : undefined
-          });
-        } else {
-          console.error('❌ Rewards API error:', response.statusCode);
-          const error = new Error(`Rewards API returned ${response.statusCode}`);
-          error.statusCode = response.statusCode;
-          error.details = { response: data.substring(0, 500) };
-          reject(error);
-        }
-      });
-    });
-
-    request.on('error', (error) => {
-      console.error('❌ Network error:', error);
-      reject(error);
-    });
-    
-    request.setTimeout(15000, () => {
-      request.destroy();
-      reject(new Error('Rewards API timeout'));
-    });
-    
     request.end();
   });
 }
