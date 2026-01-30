@@ -7,7 +7,7 @@
 // Points expire 360 days after the last EARNING activity (not spending/redemption)
 
 const STAMPED_API_KEY = process.env.STAMPED_API_KEY;
-const STAMPED_SHOP_ID = process.env.STAMPED_SHOP_ID || '236485';
+const STAMPED_SHOP_ID = process.env.STAMPED_SHOP_ID;
 
 // Events that EARN points (reset expiry timer)
 const POINT_EARNING_EVENTS = [
