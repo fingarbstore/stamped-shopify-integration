@@ -1,6 +1,6 @@
 // api/points-expiry.js
-// Gets accurate points expiry from activities (not affected by redemptions)
-// Uses header authentication (stamped-api-key) - same as customer.js
+// Enhanced version with better debugging and alternative endpoints
+// Gets accurate points expiry from activities
 
 const https = require('https');
 
@@ -23,12 +23,14 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const { shopifyId, email, customerId, debug } = req.query;
+  const { shopifyId, email, customerId, debug, endpoint } = req.query;
   
   if (!shopifyId && !email && !customerId) {
     return res.status(400).json({ 
       error: 'shopifyId, email, or customerId parameter required',
-      usage: '/api/points-expiry?shopifyId=7018143973476'
+      usage: '/api/points-expiry?shopifyId=7018143973476',
+      debugUsage: '/api/points-expiry?shopifyId=7018143973476&debug=true',
+      endpointOptions: '/api/points-expiry?shopifyId=7018143973476&endpoint=reports'
     });
   }
 
@@ -39,17 +41,23 @@ module.exports = async (req, res) => {
     if (!stampedCustomerId) {
       const customer = await lookupCustomer({ shopifyId, email });
       stampedCustomerId = customer.customerId;
+      
+      if (debug === 'true') {
+        console.log('Customer lookup successful:', stampedCustomerId);
+      }
     }
 
     // Step 2: Fetch activities for this customer
-    const activities = await fetchActivities(stampedCustomerId);
+    const activities = await fetchActivities(stampedCustomerId, endpoint, debug === 'true');
     
     if (debug === 'true') {
       return res.status(200).json({
         debug: true,
         customerId: stampedCustomerId,
         totalActivities: activities.length,
-        activities: activities.slice(0, 10) // First 10 for debugging
+        endpointUsed: endpoint || 'loyalty',
+        activities: activities.slice(0, 10), // First 10 for debugging
+        allEvents: activities.map(a => a.event)
       });
     }
 
@@ -58,12 +66,12 @@ module.exports = async (req, res) => {
       const event = activity.event || '';
       
       // Exclude redemptions - these should NOT reset expiry
-      if (event === 'redeem/points') {
+      if (event === 'redeem/points' || event.includes('redeem')) {
         return false;
       }
       
       // Include order events (where points are earned)
-      if (event.includes('orders/')) {
+      if (event.includes('orders/') || event.includes('order')) {
         return true;
       }
       
@@ -85,7 +93,9 @@ module.exports = async (req, res) => {
         success: true,
         data: {
           hasExpiry: false,
-          message: 'No point-earning activities found'
+          message: 'No point-earning activities found',
+          hint: 'Try different endpoint: ?endpoint=reports or ?endpoint=merchant',
+          totalActivitiesFetched: activities.length
         }
       });
     }
@@ -147,7 +157,8 @@ module.exports = async (req, res) => {
       success: false,
       error: 'Failed to calculate points expiry',
       details: error.message,
-      code: error.code || 'INTERNAL_ERROR'
+      code: error.code || 'INTERNAL_ERROR',
+      hint: error.statusCode === 401 ? 'Check API key permissions for Loyalty/Activities access' : undefined
     });
   }
 };
@@ -213,8 +224,8 @@ function lookupCustomer({ shopifyId, email }) {
   });
 }
 
-// Fetch activities from Stamped
-function fetchActivities(customerId) {
+// Fetch activities from Stamped - supports multiple endpoints
+function fetchActivities(customerId, endpointType = 'loyalty', debugMode = false) {
   return new Promise((resolve, reject) => {
     const shopId = process.env.STAMPED_STORE_HASH;
     const privateKey = process.env.STAMPED_PRIVATE_KEY;
@@ -223,11 +234,24 @@ function fetchActivities(customerId) {
       return reject(new Error('Missing Stamped API credentials'));
     }
 
-    // Activities endpoint - filter by customerId
-    // Using the loyalty reports activities endpoint
+    // Try different endpoint paths based on parameter
+    let path;
+    switch(endpointType) {
+      case 'reports':
+        path = `/api/v3/loyalty/reports/activities?customerId=${encodeURIComponent(customerId)}&page=0&limit=50`;
+        break;
+      case 'merchant':
+        path = `/api/v3/merchant/shops/${shopId}/customers/${encodeURIComponent(customerId)}/activities?page=0&limit=50`;
+        break;
+      case 'loyalty':
+      default:
+        path = `/api/v3/loyalty/shops/${shopId}/activities?customerId=${encodeURIComponent(customerId)}&page=0&limit=50`;
+        break;
+    }
+
     const options = {
       hostname: 'stamped.io',
-      path: `/api/v3/loyalty/shops/${shopId}/activities?customerId=${encodeURIComponent(customerId)}&page=0&limit=50`,
+      path: path,
       method: 'GET',
       headers: {
         'Accept': 'application/json',
@@ -236,7 +260,10 @@ function fetchActivities(customerId) {
       }
     };
 
-    console.log('Fetching activities:', options.path);
+    if (debugMode) {
+      console.log('Fetching activities from:', options.path);
+      console.log('Endpoint type:', endpointType);
+    }
 
     const request = https.request(options, (response) => {
       let data = '';
@@ -246,22 +273,34 @@ function fetchActivities(customerId) {
       });
       
       response.on('end', () => {
-        console.log('Activities Response Status:', response.statusCode);
+        if (debugMode) {
+          console.log('Activities Response Status:', response.statusCode);
+          console.log('Response length:', data.length);
+        }
         
         if (response.statusCode === 200) {
           try {
             const parsed = JSON.parse(data);
             // Response might be an array directly or wrapped in an object
             const activities = Array.isArray(parsed) ? parsed : (parsed.activities || parsed.data || []);
-            console.log(`✅ Found ${activities.length} activities`);
+            
+            if (debugMode) {
+              console.log(`✅ Found ${activities.length} activities`);
+            }
+            
             resolve(activities);
           } catch (e) {
             reject(new Error('Invalid JSON response from activities'));
           }
         } else if (response.statusCode === 401) {
-          const error = new Error('Activities API authentication failed - check API key permissions');
+          const error = new Error('Activities API authentication failed - check API key permissions for Loyalty access');
           error.statusCode = 401;
           error.code = 'AUTH_FAILED';
+          reject(error);
+        } else if (response.statusCode === 403) {
+          const error = new Error('Activities API forbidden - API key lacks permission for this endpoint');
+          error.statusCode = 403;
+          error.code = 'FORBIDDEN';
           reject(error);
         } else {
           const error = new Error(`Activities API returned ${response.statusCode}: ${data}`);
