@@ -1,98 +1,59 @@
-// /api/expiry.js
-// Standalone endpoint to get accurate points expiry from activities
-// Call this ALONGSIDE your existing /api/customer endpoint
-// 
-// Usage: /api/points-expiry?shopifyId=123 or ?email=test@example.com or ?customerId=xxx
-//
-// Points expire 360 days after the last EARNING activity (not spending/redemption)
+// api/points-expiry.js
+// Gets accurate points expiry from activities (not affected by redemptions)
+// Uses header authentication (stamped-api-key) - same as customer.js
 
-const STAMPED_API_KEY = process.env.STAMPED_API_KEY;
-const STAMPED_SHOP_ID = process.env.STAMPED_SHOP_ID;
+const https = require('https');
 
-// Events that EARN points (reset expiry timer)
-const POINT_EARNING_EVENTS = [
-  'orders/paid|fulfilled',
-  'orders/paid',
-  'orders/fulfilled',
-  'referral/program',
-  'birthday/program',
-  'signup/program',
-  'custom/program',
-  'social/program',
-  'review/program'
-];
-
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowedOrigins = [
+    'https://couvertureandthegarbstore.com',
+    'https://www.couvertureandthegarbstore.com',
+    'http://localhost:3000'
+  ];
+  
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
+  
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  if (req.method !== 'GET') {
-    return res.status(405).json({ success: false, error: 'Method not allowed' });
-  }
-
-  const { customerId, email, shopifyId } = req.query;
-
-  if (!customerId && !email && !shopifyId) {
+  const { shopifyId, email, customerId, debug } = req.query;
+  
+  if (!shopifyId && !email && !customerId) {
     return res.status(400).json({ 
-      success: false, 
-      error: 'customerId, email, or shopifyId is required' 
+      error: 'shopifyId, email, or customerId parameter required',
+      usage: '/api/points-expiry?shopifyId=7018143973476'
     });
   }
 
   try {
-    // Get Stamped customerId if we only have email or shopifyId
+    // Step 1: Get Stamped customerId if we only have shopifyId or email
     let stampedCustomerId = customerId;
     
     if (!stampedCustomerId) {
-      const params = new URLSearchParams();
-      if (email) params.append('email', email);
-      if (shopifyId) params.append('shopifyId', shopifyId);
-
-      const lookupResponse = await fetch(
-        `https://stamped.io/api/v3/shops/${STAMPED_SHOP_ID}/customers/lookup?${params}`,
-        {
-          headers: {
-            'Authorization': `Basic ${Buffer.from(STAMPED_API_KEY + ':').toString('base64')}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      if (!lookupResponse.ok) {
-        return res.status(404).json({ 
-          success: false, 
-          error: 'Customer not found' 
-        });
-      }
-
-      const customer = await lookupResponse.json();
+      const customer = await lookupCustomer({ shopifyId, email });
       stampedCustomerId = customer.customerId;
     }
 
-    // Fetch activities for this customer
-    const activitiesResponse = await fetch(
-      `https://stamped.io/api/v3/loyalty/shops/${STAMPED_SHOP_ID}/activities?customerId=${stampedCustomerId}&page=0&limit=50`,
-      {
-        headers: {
-          'Authorization': `Basic ${Buffer.from(STAMPED_API_KEY + ':').toString('base64')}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-
-    if (!activitiesResponse.ok) {
-      throw new Error(`Activities API returned ${activitiesResponse.status}`);
+    // Step 2: Fetch activities for this customer
+    const activities = await fetchActivities(stampedCustomerId);
+    
+    if (debug === 'true') {
+      return res.status(200).json({
+        debug: true,
+        customerId: stampedCustomerId,
+        totalActivities: activities.length,
+        activities: activities.slice(0, 10) // First 10 for debugging
+      });
     }
 
-    const activities = await activitiesResponse.json();
-    
-    // Find the latest point-EARNING activity (not redemption)
+    // Step 3: Find the latest point-EARNING activity (not redemption)
     const earningActivities = activities.filter(activity => {
       const event = activity.event || '';
       
@@ -101,21 +62,26 @@ export default async function handler(req, res) {
         return false;
       }
       
-      // Include known earning events
-      if (POINT_EARNING_EVENTS.some(e => event.includes(e))) {
+      // Include order events (where points are earned)
+      if (event.includes('orders/')) {
         return true;
       }
       
-      // Include any order event with points
-      if (event.includes('orders/') && activity.pointsDebit > 0) {
-        return true;
-      }
+      // Include other earning events
+      const earningEvents = [
+        'referral/program',
+        'birthday/program', 
+        'signup/program',
+        'custom/program',
+        'social/program',
+        'review/program'
+      ];
       
-      return false;
+      return earningEvents.some(e => event.includes(e));
     });
 
     if (earningActivities.length === 0) {
-      return res.json({
+      return res.status(200).json({
         success: true,
         data: {
           hasExpiry: false,
@@ -150,7 +116,7 @@ export default async function handler(req, res) {
     const now = new Date();
     const daysRemaining = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-    return res.json({
+    res.status(200).json({
       success: true,
       data: {
         hasExpiry: true,
@@ -175,11 +141,141 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Points expiry error:', error);
-    return res.status(500).json({ 
-      success: false, 
+    console.error('Points Expiry Error:', error.message);
+    
+    res.status(error.statusCode || 500).json({
+      success: false,
       error: 'Failed to calculate points expiry',
-      details: error.message
+      details: error.message,
+      code: error.code || 'INTERNAL_ERROR'
     });
   }
+};
+
+// Lookup customer to get Stamped customerId
+function lookupCustomer({ shopifyId, email }) {
+  return new Promise((resolve, reject) => {
+    const shopId = process.env.STAMPED_STORE_HASH;
+    const privateKey = process.env.STAMPED_PRIVATE_KEY;
+
+    if (!shopId || !privateKey) {
+      return reject(new Error('Missing Stamped API credentials'));
+    }
+
+    let queryParams = [`shopId=${encodeURIComponent(shopId)}`];
+    if (shopifyId) queryParams.push(`shopifyId=${encodeURIComponent(shopifyId)}`);
+    if (email) queryParams.push(`email=${encodeURIComponent(email)}`);
+
+    const options = {
+      hostname: 'stamped.io',
+      path: `/api/v3/merchant/shops/${shopId}/customers/lookup?${queryParams.join('&')}`,
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'stamped-api-key': privateKey
+      }
+    };
+
+    const request = https.request(options, (response) => {
+      let data = '';
+      
+      response.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      response.on('end', () => {
+        if (response.statusCode === 200) {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error('Invalid JSON response from customer lookup'));
+          }
+        } else if (response.statusCode === 404) {
+          const error = new Error('Customer not found');
+          error.statusCode = 404;
+          error.code = 'CUSTOMER_NOT_FOUND';
+          reject(error);
+        } else {
+          const error = new Error(`Customer lookup returned ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          reject(error);
+        }
+      });
+    });
+
+    request.on('error', reject);
+    request.setTimeout(15000, () => {
+      request.destroy();
+      reject(new Error('Customer lookup timeout'));
+    });
+    request.end();
+  });
+}
+
+// Fetch activities from Stamped
+function fetchActivities(customerId) {
+  return new Promise((resolve, reject) => {
+    const shopId = process.env.STAMPED_STORE_HASH;
+    const privateKey = process.env.STAMPED_PRIVATE_KEY;
+
+    if (!shopId || !privateKey) {
+      return reject(new Error('Missing Stamped API credentials'));
+    }
+
+    // Activities endpoint - filter by customerId
+    // Using the loyalty reports activities endpoint
+    const options = {
+      hostname: 'stamped.io',
+      path: `/api/v3/loyalty/shops/${shopId}/activities?customerId=${encodeURIComponent(customerId)}&page=0&limit=50`,
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'stamped-api-key': privateKey
+      }
+    };
+
+    console.log('Fetching activities:', options.path);
+
+    const request = https.request(options, (response) => {
+      let data = '';
+      
+      response.on('data', (chunk) => {
+        data += chunk;
+      });
+      
+      response.on('end', () => {
+        console.log('Activities Response Status:', response.statusCode);
+        
+        if (response.statusCode === 200) {
+          try {
+            const parsed = JSON.parse(data);
+            // Response might be an array directly or wrapped in an object
+            const activities = Array.isArray(parsed) ? parsed : (parsed.activities || parsed.data || []);
+            console.log(`✅ Found ${activities.length} activities`);
+            resolve(activities);
+          } catch (e) {
+            reject(new Error('Invalid JSON response from activities'));
+          }
+        } else if (response.statusCode === 401) {
+          const error = new Error('Activities API authentication failed - check API key permissions');
+          error.statusCode = 401;
+          error.code = 'AUTH_FAILED';
+          reject(error);
+        } else {
+          const error = new Error(`Activities API returned ${response.statusCode}: ${data}`);
+          error.statusCode = response.statusCode;
+          reject(error);
+        }
+      });
+    });
+
+    request.on('error', reject);
+    request.setTimeout(15000, () => {
+      request.destroy();
+      reject(new Error('Activities request timeout'));
+    });
+    request.end();
+  });
 }
