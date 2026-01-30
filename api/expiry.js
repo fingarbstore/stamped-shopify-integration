@@ -1,4 +1,4 @@
-// /api/points-expiry.js
+// /api/expiry.js
 // Standalone endpoint to get accurate points expiry from activities
 // Call this ALONGSIDE your existing /api/customer endpoint
 // 
