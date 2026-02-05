@@ -342,7 +342,164 @@ Returns customer's loyalty activity history (points earned, redeemed, etc.).
 
 ### `GET /api/expiry`
 
-Returns information about customer's expiring points.
+# Shopify Stamped.io Backend API
+
+A serverless backend proxy API deployed on Vercel that securely retrieves customer loyalty data from Stamped.io and exposes it to your Shopify storefront.
+
+**Live API:** `https://stamped-shopify-integration-l8dp.vercel.app`
+
+---
+
+## 📋 Table of Contents
+
+- [Overview](#overview)
+- - [Architecture](#architecture)
+  - - [Prerequisites](#prerequisites)
+    - - [Setup](#setup)
+      - - [API Endpoints](#api-endpoints)
+        - - [Environment Variables](#environment-variables)
+          - - [Security](#security)
+            - - [Development](#development)
+              - - [Deployment](#deployment)
+                - - [Troubleshooting](#troubleshooting)
+                  - - [Support](#support)
+                    -
+                    - ---
+                    -
+                    - ## Overview
+                    -
+                    - This API acts as a secure middleware between your Shopify store and Stamped.io's loyalty program API. It:
+                    -
+                    - - ✅ Protects your Stamped.io private API keys from client-side exposure
+                      - - ✅ Provides customer points, tier status, and loyalty data
+                        - - ✅ Returns available coupons and rewards for customers
+                          - - ✅ Handles CORS for secure cross-origin requests
+                            - - ✅ Runs serverless on Vercel with automatic scaling
+                              -
+                              - **Use Case:** Display customer loyalty information (points, rewards, coupons) on your Shopify storefront without exposing sensitive API credentials.
+                              -
+                              - ---
+                              -
+                              - ## Architecture
+                              -
+                              - ```
+                                ┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
+                                │  Shopify Store  │ ──────> │  Vercel API      │ ──────> │  Stamped.io     │
+                                │  (Frontend)     │ <────── │  (This Codebase) │ <────── │  (Loyalty API)  │
+                                └─────────────────┘         └──────────────────┘         └─────────────────┘
+                                    JavaScript                  Node.js (Async)              REST API
+                                    Fetch Requests              CORS Enabled                 Private Keys
+                                ```
+
+                                **Tech Stack:**
+                                - **Runtime:** Node.js 18+ (Serverless Functions)
+                                - - **Hosting:** Vercel
+                                  - - **HTTP Client:** Native `https` module
+                                    - - **Authentication:** Header-based API key authentication
+                                      -
+                                      - **File Structure:**
+                                      - ```
+                                        /api
+                                          ├── customer.js     # GET customer points & tier data
+                                          ├── coupons.js      # GET customer discount coupons
+                                          ├── rewards.js      # GET available loyalty rewards
+                                          ├── history.js      # GET customer loyalty history
+                                          ├── expiry.js       # GET points expiration data
+                                          └── debug.js        # Debug endpoint (dev only)
+                                        package.json          # Project metadata
+                                        vercel.json           # Vercel configuration (memory, timeout)
+                                        README.md             # This file
+                                        ```
+
+                                        ---
+
+                                        ## Prerequisites
+
+                                        Before you begin, ensure you have:
+
+                                        1. **A Stamped.io account** with loyalty program enabled
+                                        2. 2. **Stamped.io API credentials** (public key, private key, store hash)
+                                           3. 3. **A Vercel account** (free tier works)
+                                              4. 4. **A GitHub account** (for repository hosting)
+                                                 5. 5. **Git installed locally** (for pushing code)
+                                                    6.
+                                                    7. ---
+                                                    8.
+                                                    9. ## Setup
+                                                    10.
+                                                    11. ### 1. Get Stamped API Credentials
+                                                    12.
+                                                    13. 1. Log into your [Stamped.io dashboard](https://stamped.io/dashboard)
+                                                        2. 2. Navigate to **Settings → API Keys**
+                                                           3. 3. Copy the following:
+                                                              4.    - **Public API Key** (starts with `pub_`)
+                                                                    -    - **Private API Key** (starts with `priv_`)
+                                                                         -    - **Store Hash** (usually your store name, e.g., `garbstore`)
+                                                                              -
+                                                                              - ⚠️ **Keep your Private API Key secret!** Never commit it to your repository or expose it in client-side code.
+                                                                              -
+                                                                              - ---
+                                                                              -
+                                                                              - ### 2. Deploy to Vercel
+                                                                              -
+                                                                              - #### Option A: Deploy from GitHub (Recommended)
+                                                                              -
+                                                                              - 1. **Push this code to GitHub:**
+                                                                                2.    ```bash
+                                                                                         git init# Shopify Stamped.io Backend API
+
+                                                                                      A serverless backend proxy API deployed on Vercel that securely retrieves customer loyalty data from Stamped.io and exposes it to your Shopify storefront.
+
+                                                                                      **Live API:** `https://stamped-shopify-integration-l8dp.vercel.app`
+
+                                                                                      ---
+
+                                                                                      ## 📋 Table of Contents
+
+                                                                                      - [Overview](#overview)
+                                                                                      - [Architecture](#architecture)
+                                                                                      - [Prerequisites](#prerequisites)
+                                                                                      - [Setup](#setup)
+                                                                                      - [API Endpoints](#api-endpoints)
+                                                                                      - [Environment Variables](#environment-variables)
+                                                                                      - [Security](#security)
+                                                                                      - [Development](#development)
+                                                                                      - [Deployment](#deployment)
+                                                                                      - [Troubleshooting](#troubleshooting)
+                                                                                      - [Support](#support)
+
+                                                                                      ---
+
+                                                                                      ## Overview
+
+                                                                                      This API acts as a secure middleware between your Shopify store and Stamped.io's loyalty program API. It:
+
+                                                                                      - ✅ Protects your Stamped.io private API keys from client-side exposure
+                                                                                      - ✅ Provides customer points, tier status, and loyalty data
+                                                                                      - ✅ Returns available coupons and rewards for customers
+                                                                                      - ✅ Handles CORS for secure cross-origin requests
+                                                                                      - ✅ Runs serverless on Vercel with automatic scaling
+
+                                                                                      **Use Case:** Display customer loyalty information (points, rewards, coupons) on your Shopify storefront without exposing sensitive API credentials.
+
+                                                                                      ---
+
+                                                                                      ## Architecture
+
+                                                                                      ```
+                                                                                      ┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
+                                                                                  │  Shopify Store  │ ──────> │  Vercel API      │ ──────> │  Stamped.io     │
+                                                                                  │  (Frontend)     │ <────── │  (This Codebase) │ <────── │  (Loyalty API)  │
+                                                                                  └─────────────────┘         └──────────────────┘         └─────────────────┘
+                                                                                      JavaScript                  Node.js (Async)              REST API
+                                                                                      Fetch Requests              CORS Enabled                 Private Keys
+                                                                                  ```
+
+                                                                                  **Tech Stack:**
+                                                                                  - **Runtime:** Node.js 18+ (Serverless Functions)
+                                                                                  - **Hosting:** Vercel
+                                                                                  - **HTTP Client:** Native `https` module
+                                                                                  - **Returns information about customer's expiring points.
 
 **Parameters:**
 | Parameter | Type   | Required | Description              |
