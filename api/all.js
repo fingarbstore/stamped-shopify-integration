@@ -160,7 +160,7 @@ module.exports = async (req, res) => {
       const lastDate = new Date(parseInt(pointsUpdatedRaw));
       if (!isNaN(lastDate)) {
         const expiryDate = new Date(lastDate);
-        expiryDate.setDate(expiryDate.getDate() + 360);
+        expiryDate.setDate(expiryDate.getDate() + 365);
         const daysRemaining = Math.ceil((expiryDate - new Date()) / 86400000);
         expiryData = {
           hasExpiry: true,
