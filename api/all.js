@@ -101,7 +101,6 @@ module.exports = async (req, res) => {
   // Step 2: fetch rewards + activities in parallel
   const [rewardsRes, activitiesRes] = await Promise.all([
     stampedRequest(`/api/v3/loyalty/shops/${SHOP_ID}/rewards?limit=100`, PRIVATE_KEY),
-    stampedRequest(`/api/v3/loyalty/shops/${SHOP_ID}/activities?customerId=${stampedCustomerId}&limit=50`, PRIVATE_KEY)
   ]);
 
   // Process coupons — exact same logic as coupons.js
@@ -153,34 +152,26 @@ module.exports = async (req, res) => {
     expired: couponsData.expired.length
   };
 
-  // Process expiry — same logic as expiry.js
+  // Process expiry — based on datePointsUpdated from Stamped customer profile
   let expiryData = { hasExpiry: false };
   try {
-    const activities = Array.isArray(activitiesRes.body) ? activitiesRes.body :
-                       (activitiesRes.body?.data || activitiesRes.body?.results || []);
-    const earningEvents = activities.filter(a => {
-      const type = (a.type || a.activityType || '').toLowerCase();
-      return !type.includes('redeem') && !type.includes('spent') && !type.includes('expire');
-    });
-    if (earningEvents.length > 0) {
-      const sorted = earningEvents.sort((a, b) =>
-        new Date(b.createdAt || b.created_at || b.date || 0) -
-        new Date(a.createdAt || a.created_at || a.date || 0)
-      );
-      const lastDate   = new Date(sorted[0].createdAt || sorted[0].created_at || sorted[0].date);
-      const expiryDate = new Date(lastDate);
-      expiryDate.setDate(expiryDate.getDate() + 360);
-      const daysRemaining = Math.ceil((expiryDate - new Date()) / 86400000);
-      expiryData = {
-        hasExpiry: true,
-        lastEarningDate: lastDate.toISOString(),
-        lastEarningDateFormatted: lastDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-        expiryDate: expiryDate.toISOString(),
-        expiryDateFormatted: expiryDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
-        daysRemaining,
-        isExpired: daysRemaining <= 0,
-        isExpiringSoon: daysRemaining > 0 && daysRemaining <= 30
-      };
+    const pointsUpdatedRaw = loyalty.datePointsUpdated;
+    if (pointsUpdatedRaw) {
+      const lastDate = new Date(parseInt(pointsUpdatedRaw));
+      if (!isNaN(lastDate)) {
+        const expiryDate = new Date(lastDate);
+        expiryDate.setDate(expiryDate.getDate() + 360);
+        const daysRemaining = Math.ceil((expiryDate - new Date()) / 86400000);
+        expiryData = {
+          hasExpiry: true,
+          lastEarningDate: lastDate.toISOString(),
+          expiryDate: expiryDate.toISOString(),
+          expiryDateFormatted: expiryDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+          daysRemaining,
+          isExpired: daysRemaining <= 0,
+          isExpiringSoon: daysRemaining > 0 && daysRemaining <= 30
+        };
+      }
     }
   } catch (e) { /* leave as hasExpiry: false */ }
 
